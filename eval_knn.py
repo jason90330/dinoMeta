@@ -1,4 +1,16 @@
-# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
+# Copyright (c) Facebook, Inc. and its affiliates.
+# 
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+# 
+#     http://www.apache.org/licenses/LICENSE-2.0
+# 
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 import os
 import argparse
 
@@ -172,8 +184,8 @@ if __name__ == '__main__':
     parser.add_argument('--pretrained_weights', default='', type=str, help="Path to pretrained weights to evaluate.")
     parser.add_argument('--use_cuda', default=True, type=utils.bool_flag,
         help="Should we store the features on GPU? We recommend setting this to False if you encounter OOM")
-    parser.add_argument('--arch', default='deit_small', type=str,
-        choices=['deit_tiny', 'deit_small', 'vit_base'], help='Architecture (support only ViT atm).')
+    parser.add_argument('--arch', default='vit_small', type=str,
+        choices=['vit_tiny', 'vit_small', 'vit_base'], help='Architecture (support only ViT atm).')
     parser.add_argument('--patch_size', default=16, type=int, help='Patch resolution of the model.')
     parser.add_argument("--checkpoint_key", default="teacher", type=str,
         help='Key to use in the checkpoint (example: "teacher")')

@@ -1,4 +1,16 @@
-# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
+# Copyright (c) Facebook, Inc. and its affiliates.
+# 
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+# 
+#     http://www.apache.org/licenses/LICENSE-2.0
+# 
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """
 Misc functions.
 
@@ -19,6 +31,7 @@ import torch
 from torch import nn
 import torch.distributed as dist
 from PIL import ImageFilter, ImageOps
+from sklearn.metrics import roc_curve, auc, confusion_matrix
 
 
 class GaussianBlur(object):
@@ -62,15 +75,18 @@ def load_pretrained_weights(model, pretrained_weights, checkpoint_key, model_nam
         if checkpoint_key is not None and checkpoint_key in state_dict:
             print(f"Take key {checkpoint_key} in provided checkpoint dict")
             state_dict = state_dict[checkpoint_key]
+        # remove `module.` prefix
         state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
+        # remove `backbone.` prefix induced by multicrop wrapper
+        state_dict = {k.replace("backbone.", ""): v for k, v in state_dict.items()}
         msg = model.load_state_dict(state_dict, strict=False)
         print('Pretrained weights found at {} and loaded with msg: {}'.format(pretrained_weights, msg))
     else:
         print("Please use the `--pretrained_weights` argument to indicate the path of the checkpoint to evaluate.")
         url = None
-        if model_name == "deit_small" and patch_size == 16:
+        if model_name == "vit_small" and patch_size == 16:
             url = "dino_deitsmall16_pretrain/dino_deitsmall16_pretrain.pth"
-        elif model_name == "deit_small" and patch_size == 8:
+        elif model_name == "vit_small" and patch_size == 8:
             url = "dino_deitsmall8_pretrain/dino_deitsmall8_pretrain.pth"
         elif model_name == "vit_base" and patch_size == 16:
             url = "dino_vitbase16_pretrain/dino_vitbase16_pretrain.pth"
@@ -146,8 +162,7 @@ def cosine_scheduler(base_value, final_value, epochs, niter_per_ep, warmup_epoch
         warmup_schedule = np.linspace(start_warmup_value, base_value, warmup_iters)
 
     iters = np.arange(epochs * niter_per_ep - warmup_iters)
-    schedule = np.array([final_value + 0.5 * (base_value - final_value) * (1 + \
-        math.cos(math.pi * i / (len(iters)))) for i in iters])
+    schedule = final_value + 0.5 * (base_value - final_value) * (1 + np.cos(np.pi * iters / len(iters)))
 
     schedule = np.concatenate((warmup_schedule, schedule))
     assert len(schedule) == epochs * niter_per_ep
@@ -355,6 +370,58 @@ class MetricLogger(object):
         print('{} Total time: {} ({:.6f} s / it)'.format(
             header, total_time_str, total_time / len(iterable)))
 
+    def log_every_meta(self, iter_now, iterable_len, print_freq, header=None):
+        # i = 0
+        if not header:
+            header = ''
+        start_time = time.time()
+        end = time.time()
+        iter_time = SmoothedValue(fmt='{avg:.6f}')
+        data_time = SmoothedValue(fmt='{avg:.6f}')
+        space_fmt = ':' + str(len(str(iterable_len))) + 'd'
+        if torch.cuda.is_available():
+            log_msg = self.delimiter.join([
+                header,
+                '[{0' + space_fmt + '}/{1}]',
+                'eta: {eta}',
+                '{meters}',
+                'time: {time}',
+                'data: {data}',
+                'max mem: {memory:.0f}'
+            ])
+        else:
+            log_msg = self.delimiter.join([
+                header,
+                '[{0' + space_fmt + '}/{1}]',
+                'eta: {eta}',
+                '{meters}',
+                'time: {time}',
+                'data: {data}'
+            ])
+        MB = 1024.0 * 1024.0
+        # for iterIdx in range(0,iterable_len):
+        data_time.update(time.time() - end)
+        iter_time.update(time.time() - end)
+        if iter_now % print_freq == 0 or iter_now == iterable_len - 1:
+            eta_seconds = iter_time.global_avg * (iterable_len - iter_now)
+            eta_string = str(datetime.timedelta(seconds=int(eta_seconds)))
+            if torch.cuda.is_available():
+                print(log_msg.format(
+                    iter_now, iterable_len, eta=eta_string,
+                    meters=str(self),
+                    time=str(iter_time), data=str(data_time),
+                    memory=torch.cuda.max_memory_allocated() / MB))
+            else:
+                print(log_msg.format(
+                    iter_now, iterable_len, eta=eta_string,
+                    meters=str(self),
+                    time=str(iter_time), data=str(data_time)))
+        # i += 1
+        # end = time.time()
+        # total_time = time.time() - start_time
+        # total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+        # print('{} Total time: {} ({:.6f} s / it)'.format(
+        #     header, total_time_str, total_time / iterable_len))
 
 def get_sha():
     cwd = os.path.dirname(os.path.abspath(__file__))
@@ -421,15 +488,24 @@ def setup_for_distributed(is_master):
 
 
 def init_distributed_mode(args):
+    # launched with torch.distributed.launch
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
         args.rank = int(os.environ["RANK"])
         args.world_size = int(os.environ['WORLD_SIZE'])
         args.gpu = int(os.environ['LOCAL_RANK'])
+    # launched with submitit on a slurm cluster
     elif 'SLURM_PROCID' in os.environ:
         args.rank = int(os.environ['SLURM_PROCID'])
         args.gpu = args.rank % torch.cuda.device_count()
+    # launched naively with `python main_dino.py`
+    # we manually add MASTER_ADDR and MASTER_PORT to env variables
+    elif torch.cuda.is_available():
+        print('Will run the code on one GPU.')
+        args.rank, args.gpu, args.world_size = 0, 1, 1
+        os.environ['MASTER_ADDR'] = '127.0.0.1'
+        os.environ['MASTER_PORT'] = '29501'
     else:
-        print('Code is not suited for non distributed mode. Exit.')
+        print('Does not support training without GPU.')
         sys.exit(1)
 
     dist.init_process_group(
@@ -455,6 +531,79 @@ def accuracy(output, target, topk=(1,)):
     correct = pred.eq(target.reshape(1, -1).expand_as(pred))
     return [correct[:k].reshape(-1).float().sum(0) * 100. / batch_size for k in topk]
 
+def model_eval(output, target, output_dir, epoch):
+    target = target.cpu().detach().numpy().copy()
+    probablity = torch.nn.functional.softmax(output, dim=1).cpu().detach().numpy().copy()
+    # probablity = probablity[:,1:]
+    score = probablity[:,1:]#np.squeeze(score, 1)
+    pred = np.round(score)
+    pred = np.array(pred, dtype=int)
+    pred = np.squeeze(pred, 1)
+    # _, pred = output.topk(1, 1, True, True)
+    # pred = pred.t()
+    output_dir = output_dir+"/txt/"
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    with open(output_dir + "score.txt","a+") as f:
+        # calculate eer
+        
+        fpr, tpr, threshold = roc_curve(target,score)          
+        fnr = 1-tpr
+        diff = np.absolute(fnr - fpr)
+        idx = np.nanargmin(diff)
+        # print(threshold[idx])
+        eer = np.mean((fpr[idx],fnr[idx]))        
+
+        avg = np.add(fpr, fnr)
+        idx = np.nanargmin(avg)
+        hter = np.mean((fpr[idx],fnr[idx])) 
+
+        fpr_at_10e_m3_idx = np.argmin(np.abs(fpr-10e-3))
+        tpr_cor_10e_m3 = tpr[fpr_at_10e_m3_idx+1]
+
+        fpr_at_5e_m3_idx = np.argmin(np.abs(fpr-5e-3))
+        print(fpr[-1])
+        tpr_cor_5e_m3 = tpr[fpr_at_5e_m3_idx+1]
+
+        fpr_at_10e_m4_idx = np.argmin(np.abs(fpr-10e-4))
+        tpr_cor_10e_m4 = tpr[fpr_at_10e_m4_idx+1]
+
+        actual = list(map(lambda el:[el], target))
+        pred = list(map(lambda el:[el], pred))
+        
+        cm = confusion_matrix(actual, pred)
+        TP = cm[0][0]
+        TN = cm[1][1]
+        FP = cm[1][0]
+        FN = cm[0][1]
+        accuracy = ((TP+TN))/(TP+FN+FP+TN)
+        precision = (TP)/(TP+FP)
+        recall = (TP)/(TP+FN)
+        f_measure = (2*recall*precision)/(recall+precision)
+        sensitivity = TP / (TP + FN)
+        specificity = TN / (TN + FP)		
+        error_rate = 1 - accuracy
+        apcer = FP/(TN+FP)
+        bpcer = FN/(FN+TP)
+        acer = (apcer+bpcer)/2
+        f.write("="*60)
+        f.write('\nModel %03d \n'%(epoch))
+        f.write('TP:%d, TN:%d,  FP:%d,  FN:%d\n' %(TP,TN,FP,FN))
+        f.write('accuracy:%f\n'%(accuracy))
+        f.write('precision:%f\n'%(precision))
+        f.write('recall:%f\n'%(recall))
+        f.write('f_measure:%f\n'%(f_measure))
+        f.write('sensitivity:%f\n'%(sensitivity))
+        f.write('specificity:%f\n'%(specificity))
+        f.write('error_rate:%f\n'%(error_rate))
+        f.write('apcer:%f\n'%(apcer))
+        f.write('bpcer:%f\n'%(bpcer))
+        f.write('acer:%f\n'%(acer))
+        f.write('eer:%f\n'%(eer))
+        f.write('hter:%f\n'%(hter))
+        f.write('TPR@FPR=10E-3:%f\n'%(tpr_cor_10e_m3))
+        f.write('TPR@FPR=5E-3:%f\n'%(tpr_cor_5e_m3))
+        f.write('TPR@FPR=10E-4:%f\n\n'%(tpr_cor_10e_m4))
 
 def _no_grad_trunc_normal_(tensor, mean, std, a, b):
     # Cut & paste from PyTorch official master until it's in a few official releases - RW
@@ -544,11 +693,13 @@ class MultiCropWrapper(nn.Module):
     The inputs corresponding to a single resolution are clubbed and single
     forward is run on the same resolution inputs. Hence we do several
     forward passes = number of different resolutions used. We then
-    concatenate all the output features.
+    concatenate all the output features and run the head forward on these
+    concatenated features.
     """
     def __init__(self, backbone, head):
         super(MultiCropWrapper, self).__init__()
-        backbone.fc = nn.Identity()
+        # disable layers dedicated to ImageNet labels classification
+        backbone.fc, backbone.head = nn.Identity(), nn.Identity()
         self.backbone = backbone
         self.head = head
 

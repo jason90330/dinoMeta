@@ -1,4 +1,16 @@
-# Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
+# Copyright (c) Facebook, Inc. and its affiliates.
+# 
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+# 
+#     http://www.apache.org/licenses/LICENSE-2.0
+# 
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 import os
 import argparse
 import json
@@ -6,10 +18,12 @@ from pathlib import Path
 
 import torch
 from torch import nn
+from torch._C import device
 import torch.distributed as dist
 import torch.backends.cudnn as cudnn
 from torchvision import datasets
 from torchvision import transforms as pth_transforms
+from dataset.customData import customData
 
 import utils
 import vision_transformer as vits
@@ -34,8 +48,16 @@ def eval_linear(args):
         pth_transforms.ToTensor(),
         pth_transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
     ])
-    dataset_train = datasets.ImageFolder(os.path.join(args.data_path, "train"), transform=train_transform)
-    dataset_val = datasets.ImageFolder(os.path.join(args.data_path, "val"), transform=val_transform)
+    # dataset_train = datasets.ImageFolder(os.path.join(args.data_path, "train"), transform=train_transform)
+    # dataset_val = datasets.ImageFolder(os.path.join(args.data_path, "val"), transform=val_transform)
+    dataset_train = customData(img_path=args.data_path,
+                                txt_path=args.txt_path,
+                                data_transforms=train_transform,
+                                phase="train")
+    dataset_val = customData(img_path=args.data_path,
+                                txt_path=args.txt_path,
+                                data_transforms=val_transform,
+                                phase="val")                                
     sampler = torch.utils.data.distributed.DistributedSampler(dataset_train)
     train_loader = torch.utils.data.DataLoader(
         dataset_train,
@@ -60,7 +82,7 @@ def eval_linear(args):
     # load weights to evaluate
     utils.load_pretrained_weights(model, args.pretrained_weights, args.checkpoint_key, args.arch, args.patch_size)
 
-    linear_classifier = LinearClassifier(model.embed_dim * (args.n_last_blocks + int(args.avgpool_patchtokens)))
+    linear_classifier = LinearClassifier(model.embed_dim * (args.n_last_blocks + int(args.avgpool_patchtokens)), num_labels=args.num_labels)
     linear_classifier = linear_classifier.cuda()
     linear_classifier = nn.parallel.DistributedDataParallel(linear_classifier, device_ids=[args.gpu])
 
@@ -77,6 +99,7 @@ def eval_linear(args):
     to_restore = {"epoch": 0, "best_acc": 0.}
     utils.restart_from_checkpoint(
         os.path.join(args.output_dir, "checkpoint.pth.tar"),
+        # os.path.join(args.output_dir, "checkpoint_from5.pth.tars"),        
         run_variables=to_restore,
         state_dict=linear_classifier,
         optimizer=optimizer,
@@ -94,7 +117,7 @@ def eval_linear(args):
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                      'epoch': epoch}
         if epoch % args.val_freq == 0 or epoch == args.epochs - 1:
-            test_stats = validate_network(val_loader, model, linear_classifier, args.n_last_blocks, args.avgpool_patchtokens)
+            test_stats = validate_network(val_loader, model, linear_classifier, args.n_last_blocks, args.avgpool_patchtokens, args.output_dir, epoch)
             print(f"Accuracy at epoch {epoch} of the network on the {len(dataset_val)} test images: {test_stats['acc1']:.1f}%")
             best_acc = max(best_acc, test_stats["acc1"])
             print(f'Max accuracy so far: {best_acc:.2f}%')
@@ -110,9 +133,10 @@ def eval_linear(args):
                 "scheduler": scheduler.state_dict(),
                 "best_acc": best_acc,
             }
-            torch.save(save_dict, os.path.join(args.output_dir, "checkpoint.pth.tar"))
+            # torch.save(save_dict, os.path.join(args.output_dir, "checkpoint.pth.tar"))
+            torch.save(save_dict, os.path.join(args.output_dir, "checkpoint{ep:04}.pth.tar".format(ep=epoch)))
     print("Training of the supervised linear classifier on frozen features completed.\n"
-                "Top-1 test accuracy: {acc:.1f}".format(acc=max_accuracy))
+                "Top-1 test accuracy: {acc:.1f}".format(acc=best_acc))
 
 
 def train(model, linear_classifier, optimizer, loader, epoch, n, avgpool):
@@ -127,7 +151,11 @@ def train(model, linear_classifier, optimizer, loader, epoch, n, avgpool):
 
         # forward
         with torch.no_grad():
-            output = model.forward_return_n_last_blocks(inp, n, avgpool)
+            intermediate_output = model.get_intermediate_layers(inp, n)
+            output = [x[:, 0] for x in intermediate_output]
+            if avgpool:
+                output.append(torch.mean(intermediate_output[-1][:, 1:], dim=1))
+            output = torch.cat(output, dim=-1)
         output = linear_classifier(output)
 
         # compute cross entropy loss
@@ -151,7 +179,12 @@ def train(model, linear_classifier, optimizer, loader, epoch, n, avgpool):
 
 
 @torch.no_grad()
-def validate_network(val_loader, model, linear_classifier, n, avgpool):
+def validate_network(val_loader, model, linear_classifier, n, avgpool, output_dir, epoch):
+    outputs = torch.tensor((), device=torch.device('cuda:0'))
+    targets = torch.tensor((), device=torch.device('cuda:0'))
+    # outputs = []
+    # targets = []
+
     linear_classifier.eval()
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Test:'
@@ -160,19 +193,37 @@ def validate_network(val_loader, model, linear_classifier, n, avgpool):
         inp = inp.cuda(non_blocking=True)
         target = target.cuda(non_blocking=True)
 
-        # compute output
-        output = model.forward_return_n_last_blocks(inp, n, avgpool)
+        # forward
+        with torch.no_grad():
+            intermediate_output = model.get_intermediate_layers(inp, n)
+            output = [x[:, 0] for x in intermediate_output]
+            if avgpool:
+                output.append(torch.mean(intermediate_output[-1][:, 1:], dim=1))
+            output = torch.cat(output, dim=-1)
         output = linear_classifier(output)
         loss = nn.CrossEntropyLoss()(output, target)
 
-        acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
+        if linear_classifier.module.num_labels >= 5:
+            acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
+        else:
+            acc1, = utils.accuracy(output, target, topk=(1,))
+        outputs=torch.cat((outputs,output),0)
+        targets=torch.cat((targets,target),0)
+        # outputs.append(output)
+        # targets.append(target)
 
         batch_size = inp.shape[0]
         metric_logger.update(loss=loss.item())
         metric_logger.meters['acc1'].update(acc1.item(), n=batch_size)
-        metric_logger.meters['acc5'].update(acc5.item(), n=batch_size)
-    print('* Acc@1 {top1.global_avg:.3f} Acc@5 {top5.global_avg:.3f} loss {losses.global_avg:.3f}'
+        if linear_classifier.module.num_labels >= 5:
+            metric_logger.meters['acc5'].update(acc5.item(), n=batch_size)
+    if linear_classifier.module.num_labels >= 5:
+        print('* Acc@1 {top1.global_avg:.3f} Acc@5 {top5.global_avg:.3f} loss {losses.global_avg:.3f}'
           .format(top1=metric_logger.acc1, top5=metric_logger.acc5, losses=metric_logger.loss))
+    else:
+        print('* Acc@1 {top1.global_avg:.3f} loss {losses.global_avg:.3f}'
+          .format(top1=metric_logger.acc1, losses=metric_logger.loss))
+    utils.model_eval(outputs, targets, output_dir, epoch)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
@@ -180,6 +231,7 @@ class LinearClassifier(nn.Module):
     """Linear layer to train on top of frozen features"""
     def __init__(self, dim, num_labels=1000):
         super(LinearClassifier, self).__init__()
+        self.num_labels = num_labels
         self.linear = nn.Linear(dim, num_labels)
         self.linear.weight.data.normal_(mean=0.0, std=0.01)
         self.linear.bias.data.zero_()
@@ -195,14 +247,14 @@ class LinearClassifier(nn.Module):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('Evaluation with linear classification on ImageNet')
     parser.add_argument('--n_last_blocks', default=4, type=int, help="""Concatenate [CLS] tokens
-        for the `n` last blocks. We use `n=4` when evaluating DeiT-Small and `n=1` with ViT-Base.""")
+        for the `n` last blocks. We use `n=4` when evaluating ViT-Small and `n=1` with ViT-Base.""")
     parser.add_argument('--avgpool_patchtokens', default=False, type=utils.bool_flag,
         help="""Whether ot not to concatenate the global average pooled features to the [CLS] token.
-        We typically set this to False for DeiT-Small and to True with ViT-Base.""")
-    parser.add_argument('--arch', default='deit_small', type=str,
-        choices=['deit_tiny', 'deit_small', 'vit_base'], help='Architecture (support only ViT atm).')
+        We typically set this to False for ViT-Small and to True with ViT-Base.""")
+    parser.add_argument('--arch', default='vit_small', type=str,
+        choices=['vit_tiny', 'vit_small', 'vit_base'], help='Architecture (support only ViT atm).')
     parser.add_argument('--patch_size', default=16, type=int, help='Patch resolution of the model.')
-    parser.add_argument('--pretrained_weights', default='', type=str, help="Path to pretrained weights to evaluate.")
+    parser.add_argument('--pretrained_weights', default='./output/ssl/checkpoint.pth', type=str, help="Path to pretrained weights to evaluate.")
     parser.add_argument("--checkpoint_key", default="teacher", type=str, help='Key to use in the checkpoint (example: "teacher")')
     parser.add_argument('--epochs', default=100, type=int, help='Number of epochs of training.')
     parser.add_argument("--lr", default=0.001, type=float, help="""Learning rate at the beginning of
@@ -213,9 +265,11 @@ if __name__ == '__main__':
     parser.add_argument("--dist_url", default="env://", type=str, help="""url used to set up
         distributed training; see https://pytorch.org/docs/stable/distributed.html""")
     parser.add_argument("--local_rank", default=0, type=int, help="Please ignore and do not set this argument.")
-    parser.add_argument('--data_path', default='/path/to/imagenet/', type=str)
+    parser.add_argument('--data_path', default='../../CelebA_Data/trainSquareCropped', type=str)
+    parser.add_argument("--txt_path", default='../../CelebA_Data/metas/intra_test/train_label.txt', type=str)
     parser.add_argument('--num_workers', default=10, type=int, help='Number of data loading workers per GPU.')
     parser.add_argument('--val_freq', default=1, type=int, help="Epoch frequency for validation.")
-    parser.add_argument('--output_dir', default=".", help='Path to save logs and checkpoints')
+    parser.add_argument('--output_dir', default="./output/linear", help='Path to save logs and checkpoints')
+    parser.add_argument('--num_labels', default=2, type=int, help='Number of labels for linear classifier')
     args = parser.parse_args()
     eval_linear(args)
