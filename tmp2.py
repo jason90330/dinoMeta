@@ -1,27 +1,20 @@
-# import torch
-# import torch.nn as nn
 
-import copy
-# from collections import OrderedDict
+# slow_program.py
+from decimal import *
 
-# model = nn.Sequential( OrderedDict( [ ('fc0', nn.Linear(3,1)) ] ) )
-# #model.fc0.weight = nn.Parameter( torch.randn(3,1) + 3 )
-# print(model.fc0.weight)
-# w = model.fc0.weight
-# for i in range(5):
-#     w_new = w - 2*(w)
-# print()
-# print(w_new.is_leaf)
-# #model.fc0.weight = nn.Parameter( w_new )
-# setattr(model,'fc0.weight', w_new )
-# print(model.fc0.weight.is_leaf)
-# print(model.fc0.weight)
-# model_copy = copy.deepcopy(model)
-import torch
-q = torch.nn.Parameter(torch.Tensor(3,3))
-print(q)
+def exp(x):
+    getcontext().prec += 2
+    i, lasts, s, fact, num = 0, 0, 1, 1, 1
+    while s != lasts:
+        lasts = s
+        i += 1
+        fact *= i
+        num *= x
+        s += num / fact
+    getcontext().prec -= 2
+    return +s
 
-p = q[0,:]
-print(p)
-
-param_copy = copy.deepcopy(p)
+exp(Decimal(150))
+exit()
+exp(Decimal(400))
+exp(Decimal(3000))

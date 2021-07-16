@@ -97,14 +97,14 @@ def display_instances(image, mask, fname="test", figsize=(5, 5), blur=False, con
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('Visualize Self-Attention maps')
-    parser.add_argument('--arch', default='vit_small', type=str,
+    parser.add_argument('--arch', default='vit_tiny', type=str,
         choices=['vit_tiny', 'vit_small', 'vit_base'], help='Architecture (support only ViT atm).')
     parser.add_argument('--patch_size', default=16, type=int, help='Patch resolution of the model.')
-    parser.add_argument('--pretrained_weights', default='output/checkpoint.pth', type=str,
+    parser.add_argument('--pretrained_weights', default='output/ssl_meta_gpu_2_bs_45_lr_ori/checkpoint0000.pth', type=str,
         help="Path to pretrained weights to load.")
     parser.add_argument("--checkpoint_key", default="teacher", type=str,
         help='Key to use in the checkpoint (example: "teacher")')
-    #parser.add_argument("--image_path", default='../../CelebA_Data/testSquareCropped/3613/spoof/511091.png', type=str, help="Path of the image to load.")
+    # parser.add_argument("--image_path", default='../../CelebA_Data/testSquareCropped/3613/spoof/511091.png', type=str, help="Path of the image to load.")
     # parser.add_argument("--image_path", default='../../CelebA_Data/testSquareCropped/4930/spoof/497676.png', type=str, help="Path of the image to load.")
     # parser.add_argument("--image_path", default='../../CelebA_Data/testSquareCropped/4966/spoof/498608.png', type=str, help="Path of the image to load.")
     # parser.add_argument("--image_path", default='../../CelebA_Data/testSquareCropped/5013/spoof/499988.png', type=str, help="Path of the image to load.")
