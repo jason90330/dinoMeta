@@ -83,16 +83,16 @@ def get_args_parser():
         to use half precision for training. Improves training time and memory requirements,
         but can provoke instability and slight decay of performance. We recommend disabling
         mixed precision if the loss is unstable, if reducing the patch size or if training with bigger ViTs.""")
-    parser.add_argument('--weight_decay', type=float, default=0.04, help="""Initial value of the
+    parser.add_argument('--weight_decay', type=float, default=0.08, help="""Initial value of the
         weight decay. With ViT, a smaller value at the beginning of training works well.""")
-    parser.add_argument('--weight_decay_end', type=float, default=0.4, help="""Final value of the
+    parser.add_argument('--weight_decay_end', type=float, default=0.8, help="""Final value of the
         weight decay. We use a cosine schedule for WD and using a larger decay by
         the end of training improves performance for ViTs.""")
     parser.add_argument('--clip_grad', type=float, default=3.0, help="""Maximal parameter
         gradient norm if using gradient clipping. Clipping with norm .3 ~ 1.0 can
         help optimization for larger ViT architectures. 0 for disabling.""")
     parser.add_argument('--gpu', default=[0,1])
-    parser.add_argument('--batch_size_per_gpu', default=32, type=int,
+    parser.add_argument('--batch_size_per_gpu', default=45, type=int,
         help='Per-GPU batch-size : number of distinct images loaded on one GPU.')
     parser.add_argument('--epochs', default=100, type=int, help='Number of epochs of training.')
     parser.add_argument('--freeze_last_layer', default=1, type=int, help="""Number of epochs
@@ -101,7 +101,7 @@ def get_args_parser():
     parser.add_argument("--lr", default=0.0005, type=float, help="""Learning rate at the end of
         linear warmup (highest LR used during training). The learning rate is linearly scaled
         with the batch size, and specified here for a reference batch size of 256.""")
-    parser.add_argument("--warmup_epochs", default=10, type=int,
+    parser.add_argument("--warmup_epochs", default=5, type=int,
         help="Number of epochs for the linear learning-rate warm up.")
     parser.add_argument('--min_lr', type=float, default=1e-6, help="""Target LR at the
         end of optimization. We use a cosine LR schedule with linear warmup.""")
@@ -125,10 +125,10 @@ def get_args_parser():
         help='Please specify path to the ImageNet training data.')
     parser.add_argument("--txt_path", default='../../CelebA_Data/metas/intra_test/train_label.txt', type=str)
     parser.add_argument("--json_path", default='../../CelebA_Data/metas/intra_test/train_label.json', type=str)
-    parser.add_argument('--output_dir', default="output/ssl_reptile/", type=str, help='Path to save logs and checkpoints.')
+    parser.add_argument('--output_dir', default="output/ssl_meta_gpu_2_bs_45_lr_ori/", type=str, help='Path to save logs and checkpoints.')
     parser.add_argument('--saveckp_freq', default=20, type=int, help='Save checkpoint every x epochs.')
     parser.add_argument('--seed', default=0, type=int, help='Random seed.')
-    parser.add_argument('--num_workers', default=10, type=int, help='Number of data loading workers per GPU.')
+    parser.add_argument('--num_workers', default=8, type=int, help='Number of data loading workers per GPU.')
     parser.add_argument("--dist_url", default="env://", type=str, help="""url used to set up
         distributed training; see https://pytorch.org/docs/stable/distributed.html""")
     parser.add_argument("--local_rank", default=0, type=int, help="Please ignore and do not set this argument.")    
@@ -431,6 +431,12 @@ def train_one_epoch(student, teacher, teacher_without_ddp, embed_dim, dino_loss,
         random.shuffle(domain_list)
         meta_train_list = domain_list[:len(catimglist)-1] 
         meta_test_list = domain_list[len(catimglist)-1:]
+
+        # 先將 meta-test image 先放起來就不用重新讀
+        meta_test_index = meta_test_list[0]
+        meta_test_images = catimglist[meta_test_index]
+        # move images to gpu
+        meta_test_images = [im.cuda(non_blocking=True) for im in meta_test_images]
         
         for index in meta_train_list: # iterate all tasks, each task include meta-train and meta-test
             
@@ -503,25 +509,25 @@ def train_one_epoch(student, teacher, teacher_without_ddp, embed_dim, dino_loss,
                 loss = dino_loss(student_output, teacher_output, epoch)
                 iterLoss += loss
 
-                param_norms = None
-                if fp16_scaler is None:
-                    loss.backward()
-                    if args.clip_grad: #to prevent diverged training
-                        param_norms = utils.clip_gradients(student_learner, args.clip_grad)
-                    utils.cancel_gradients_last_layer(epoch, student_learner,
-                                                    args.freeze_last_layer)
-                    adapt_opt.step()
-                else:
-                    fp16_scaler.scale(loss).backward()
-                    if args.clip_grad:
-                        fp16_scaler.unscale_(adapt_opt)  # unscale the gradients of optimizer's assigned params in-place
-                        param_norms = utils.clip_gradients(student_learner, args.clip_grad)
-                    utils.cancel_gradients_last_layer(epoch, student_learner,
-                                                    args.freeze_last_layer) # 不太懂為何前面的 last_layer weight_v 有 gradient
-                    fp16_scaler.step(adapt_opt)
-                    fp16_scaler.update()
-                # loss.backward()
-                # adapt_opt.step()
+            param_norms = None
+            if fp16_scaler is None:
+                loss.backward()
+                if args.clip_grad: #to prevent diverged training
+                    param_norms = utils.clip_gradients(student_learner, args.clip_grad)
+                utils.cancel_gradients_last_layer(epoch, student_learner,
+                                                args.freeze_last_layer)
+                adapt_opt.step()
+            else:
+                fp16_scaler.scale(loss).backward()
+                if args.clip_grad:
+                    fp16_scaler.unscale_(adapt_opt)  # unscale the gradients of optimizer's assigned params in-place
+                    param_norms = utils.clip_gradients(student_learner, args.clip_grad)
+                utils.cancel_gradients_last_layer(epoch, student_learner,
+                                                args.freeze_last_layer) # 不太懂為何前面的 last_layer weight_v 有 gradient
+                fp16_scaler.step(adapt_opt)
+                fp16_scaler.update()
+            # loss.backward()
+            # adapt_opt.step()
             with torch.no_grad(): # EMA 更新 teacher_learner
                 m = momentum_schedule[it]  # momentum parameter
                 for param_q, param_k in zip(student_learner.parameters(), teacher_learner.parameters()):
@@ -534,41 +540,38 @@ def train_one_epoch(student, teacher, teacher_without_ddp, embed_dim, dino_loss,
             #     p.grad.data.add_(-1.0, l.data)
             """
             Meta-test
-            """
-            meta_test_index = meta_test_list[0]
+            """            
             # catimg_meta = catimglist[meta_test_index]
             # batchidx = list(range(len(catimg_meta)))
             # random.shuffle(batchidx)
             # images = catimg_meta[batchidx,:]
-            images = catimglist[meta_test_index]
-            # move images to gpu
-            images = [im.cuda(non_blocking=True) for im in images]
+            
             with torch.cuda.amp.autocast(fp16_scaler is not None):
-                teacher_output = teacher_learner(images[:2])  # only the 2 global views pass through the teacher
-                student_output = student_learner(images)
+                teacher_output = teacher_learner(meta_test_images[:2])  # only the 2 global views pass through the teacher
+                student_output = student_learner(meta_test_images)
                 adapt_opt.zero_grad()
                 loss = dino_loss(student_output, teacher_output, epoch)
                 iterLoss += loss
 
-                param_norms = None
-                if fp16_scaler is None:
-                    loss.backward()
-                    if args.clip_grad: #to prevent diverged training
-                        param_norms = utils.clip_gradients(student_learner, args.clip_grad)
-                    utils.cancel_gradients_last_layer(epoch, student_learner,
-                                                    args.freeze_last_layer)
-                    adapt_opt.step()
-                else:
-                    fp16_scaler.scale(loss).backward()
-                    if args.clip_grad:
-                        fp16_scaler.unscale_(adapt_opt)  # unscale the gradients of optimizer's assigned params in-place
-                        param_norms = utils.clip_gradients(student_learner, args.clip_grad)
-                    utils.cancel_gradients_last_layer(epoch, student_learner,
-                                                    args.freeze_last_layer)
-                    fp16_scaler.step(adapt_opt)
-                    fp16_scaler.update()
-                # loss.backward()
-                # adapt_opt.step() # 更新 student_learner，因為最終的 student 會靠 student_learner 更新
+            param_norms = None
+            if fp16_scaler is None:
+                loss.backward()
+                if args.clip_grad: #to prevent diverged training
+                    param_norms = utils.clip_gradients(student_learner, args.clip_grad)
+                utils.cancel_gradients_last_layer(epoch, student_learner,
+                                                args.freeze_last_layer)
+                adapt_opt.step()
+            else:
+                fp16_scaler.scale(loss).backward()
+                if args.clip_grad:
+                    fp16_scaler.unscale_(adapt_opt)  # unscale the gradients of optimizer's assigned params in-place
+                    param_norms = utils.clip_gradients(student_learner, args.clip_grad)
+                utils.cancel_gradients_last_layer(epoch, student_learner,
+                                                args.freeze_last_layer)
+                fp16_scaler.step(adapt_opt)
+                fp16_scaler.update()
+            # loss.backward()
+            # adapt_opt.step() # 更新 student_learner，因為最終的 student 會靠 student_learner 更新
             # 這邊不需要更新 teacher_learner 了，因為已經結束 meta-test
 
             if not math.isfinite(loss.item()):

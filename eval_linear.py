@@ -251,10 +251,10 @@ if __name__ == '__main__':
     parser.add_argument('--avgpool_patchtokens', default=False, type=utils.bool_flag,
         help="""Whether ot not to concatenate the global average pooled features to the [CLS] token.
         We typically set this to False for ViT-Small and to True with ViT-Base.""")
-    parser.add_argument('--arch', default='vit_small', type=str,
+    parser.add_argument('--arch', default='vit_tiny', type=str,
         choices=['vit_tiny', 'vit_small', 'vit_base'], help='Architecture (support only ViT atm).')
     parser.add_argument('--patch_size', default=16, type=int, help='Patch resolution of the model.')
-    parser.add_argument('--pretrained_weights', default='./output/ssl/checkpoint.pth', type=str, help="Path to pretrained weights to evaluate.")
+    parser.add_argument('--pretrained_weights', default='./output/ssl_tiny/checkpoint.pth', type=str, help="Path to pretrained weights to evaluate.")
     parser.add_argument("--checkpoint_key", default="teacher", type=str, help='Key to use in the checkpoint (example: "teacher")')
     parser.add_argument('--epochs', default=100, type=int, help='Number of epochs of training.')
     parser.add_argument("--lr", default=0.001, type=float, help="""Learning rate at the beginning of
@@ -269,7 +269,7 @@ if __name__ == '__main__':
     parser.add_argument("--txt_path", default='../../CelebA_Data/metas/intra_test/train_label.txt', type=str)
     parser.add_argument('--num_workers', default=10, type=int, help='Number of data loading workers per GPU.')
     parser.add_argument('--val_freq', default=1, type=int, help="Epoch frequency for validation.")
-    parser.add_argument('--output_dir', default="./output/linear", help='Path to save logs and checkpoints')
+    parser.add_argument('--output_dir', default="./output/ssl_tiny_linear", help='Path to save logs and checkpoints')
     parser.add_argument('--num_labels', default=2, type=int, help='Number of labels for linear classifier')
     args = parser.parse_args()
     eval_linear(args)
