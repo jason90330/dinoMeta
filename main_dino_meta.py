@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from torch.utils.tensorboard import SummaryWriter
 import argparse
 import os
 import sys
@@ -95,7 +96,7 @@ def get_args_parser():
     parser.add_argument('--batch_size_per_gpu', default=45, type=int,
         help='Per-GPU batch-size : number of distinct images loaded on one GPU.')
     parser.add_argument('--epochs', default=100, type=int, help='Number of epochs of training.')
-    parser.add_argument('--freeze_last_layer', default=1, type=int, help="""Number of epochs
+    parser.add_argument('--freeze_last_layer', default=5, type=int, help="""Number of epochs
         during which we keep the output layer fixed. Typically doing so during
         the first epoch helps training. Try increasing this value if the loss does not decrease.""")
     parser.add_argument("--lr", default=0.0005, type=float, help="""Learning rate at the end of
@@ -125,7 +126,7 @@ def get_args_parser():
         help='Please specify path to the ImageNet training data.')
     parser.add_argument("--txt_path", default='../../CelebA_Data/metas/intra_test/train_label.txt', type=str)
     parser.add_argument("--json_path", default='../../CelebA_Data/metas/intra_test/train_label.json', type=str)
-    parser.add_argument('--output_dir', default="output/ssl_meta_gpu_2_bs_45_lr_ori/", type=str, help='Path to save logs and checkpoints.')
+    parser.add_argument('--output_dir', default="output/ssl_meta_gpu_2_bs_18_lr_ori_freeze_5/", type=str, help='Path to save logs and checkpoints.')
     parser.add_argument('--saveckp_freq', default=20, type=int, help='Save checkpoint every x epochs.')
     parser.add_argument('--seed', default=0, type=int, help='Random seed.')
     parser.add_argument('--num_workers', default=8, type=int, help='Number of data loading workers per GPU.')
@@ -351,6 +352,7 @@ def train_dino(args):
     )
     start_epoch = to_restore["epoch"]
 
+    writer = SummaryWriter()
     start_time = time.time()
     print("Starting DINO training !")
     for epoch in range(start_epoch, args.epochs):
@@ -382,6 +384,8 @@ def train_dino(args):
             utils.save_on_master(save_dict, os.path.join(args.output_dir, f'checkpoint{epoch:04}.pth'))
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                      'epoch': epoch}
+        for k,v in train_stats.items():
+            writer.add_scalar(str(k), v, epoch)
         if utils.is_main_process():
             with (Path(args.output_dir) / "log.txt").open("a") as f:
                 f.write(json.dumps(log_stats) + "\n")

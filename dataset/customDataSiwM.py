@@ -1,5 +1,5 @@
 '''
-For CelebA-Spoof
+For Siw-M
 '''
 from torch.utils.data import Dataset
 from imutils import paths
@@ -36,14 +36,15 @@ def load_mat(path):
 class customData(Dataset):
     def __init__(self, img_path, txt_path, phase = '',data_transforms=None, loader = default_loader):
         with open(txt_path) as input_file:
-            lines = input_file.readlines()
-            random.Random(4).shuffle(lines)
+            foldLists = input_file.readlines()
+            img_paths = list(paths.list_images(img_path))
+            random.Random(4).shuffle(img_paths)
             # self.img_name = [os.path.join(img_path, (line.strip().split(' ')[0][11:])) for line in lines]
             self.img_name = []
             self.img_label = []
-            lengthOfTrain = int(len(lines)*0.8)
+            lengthOfTrain = int(len(foldLists)*0.8)
             if phase=='train':
-                for line in lines[:lengthOfTrain]:
+                for line in foldLists[:lengthOfTrain]:
                     path = os.path.join(img_path, (line.strip().split(' ')[0][11:]))
                     label = int(line.strip().split(' ')[-1])
                     if os.path.isfile(path):
@@ -52,7 +53,7 @@ class customData(Dataset):
                     else:
                         print(path)
             elif phase=='val':
-                for line in lines[lengthOfTrain:]:
+                for line in foldLists[lengthOfTrain:]:
                     path = os.path.join(img_path, (line.strip().split(' ')[0][11:]))
                     label = int(line.strip().split(' ')[-1])
                     if os.path.isfile(path):
@@ -61,14 +62,19 @@ class customData(Dataset):
                     else:
                         print(path)
             elif phase=="ssl":
-                for line in lines:
-                    path = os.path.join(img_path, (line.strip().split(' ')[0][11:]))
-                    label = int(line.strip().split(' ')[-1])
-                    if os.path.isfile(path):
-                        self.img_name.append(path)
-                        self.img_label.append(label)
-                    else:
-                        print(path)
+                for path in img_paths:#不能先吃
+                    for line in foldLists:
+                        trainFolder = line.strip("\n")
+                        if "Live" in path and "Train" in path:
+                            self.img_name.append(path)
+                            self.img_label.append(0)
+                            break
+                        elif trainFolder in path:
+                            self.img_name.append(path)
+                            self.img_label.append(1)
+                            break
+                        else:
+                            continue                   
 
             # self.img_label = [int(line.strip().split(' ')[-1]) for line in lines]
         self.data_transforms = data_transforms

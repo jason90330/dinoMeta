@@ -97,10 +97,10 @@ def display_instances(image, mask, fname="test", figsize=(5, 5), blur=False, con
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('Visualize Self-Attention maps')
-    parser.add_argument('--arch', default='vit_tiny', type=str,
+    parser.add_argument('--arch', default='vit_small', type=str,
         choices=['vit_tiny', 'vit_small', 'vit_base'], help='Architecture (support only ViT atm).')
     parser.add_argument('--patch_size', default=16, type=int, help='Patch resolution of the model.')
-    parser.add_argument('--pretrained_weights', default='output/ssl_tiny/checkpoint0000.pth', type=str,
+    parser.add_argument('--pretrained_weights', default='output/ssl_siwM/checkpoint.pth', type=str,
         help="Path to pretrained weights to load.")
     parser.add_argument("--checkpoint_key", default="teacher", type=str,
         help='Key to use in the checkpoint (example: "teacher")')
@@ -112,6 +112,11 @@ if __name__ == '__main__':
     # parser.add_argument("--image_path", default='../../CelebA_Data/testSquareCropped/10169/spoof/537988.png', type=str, help="Path of the image to load.")
     # parser.add_argument("--image_path", default='../../CelebA_Data/testSquareCropped/7823/spoof/494588.png', type=str, help="Path of the image to load.")
     # parser.add_argument("--image_path", default='../../CelebA_Data/testSquareCropped/6886/spoof/532080.png', type=str, help="Path of the image to load.")
+    # parser.add_argument("--image_path", default='../../Siw-m_similar_er/Live/Train/Live_1/0.jpg', type=str, help="Path of the image to load.")
+    # parser.add_argument("--image_path", default='../../Siw-m_similar_er/Makeup/Cosmetic/Makeup_Co_1/3.jpg', type=str, help="Path of the image to load.")
+    parser.add_argument("--image_path", default='../../Siw-m_similar_er/Paper/Paper_1/29.jpg', type=str, help="Path of the image to load.")
+    # parser.add_argument("--image_path", default='../../Siw-m_similar_er/Partial/FunnyeyeGlasses/Partial_Funnyeye_1/0.jpg', type=str, help="Path of the image to load.")
+    # parser.add_argument("--image_path", default='../../Siw-m_similar_er/Replay/Replay_1/0.jpg', type=str, help="Path of the image to load.")
     parser.add_argument('--output_dir', default='.', help='Path where to save visualizations.')
     parser.add_argument("--threshold", type=float, default=0.6, help="""We visualize masks
         obtained by thresholding the self-attention maps to keep xx% of the mass.""")
