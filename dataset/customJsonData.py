@@ -1,3 +1,6 @@
+'''
+For CelebA-Spoof
+'''
 from torch.utils.data import Dataset
 from imutils import paths
 from PIL import Image 

@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from torch.utils.tensorboard import SummaryWriter
 import argparse
 import os
 import sys
@@ -18,21 +19,24 @@ import datetime
 import time
 import math
 import json
-from pathlib import Path
+import copy
 
 import numpy as np
-from PIL import Image
 import torch
 import torch.nn as nn
 import torch.distributed as dist
 import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
+import learn2learn as l2l
+from pathlib import Path
+from PIL import Image
 from torchvision import datasets, transforms
 from torchvision import models as torchvision_models
-from dataset.customData import customData
-# from dataset.customDataSiwM import customData
+# from dataset.customData import customData
+from dataset.customJsonData import customData, get_inf_iterator
 
 import utils
+import random
 import vision_transformer as vits
 from vision_transformer import DINOHead
 
@@ -40,7 +44,7 @@ torchvision_archs = sorted(name for name in torchvision_models.__dict__
     if name.islower() and not name.startswith("__")
     and callable(torchvision_models.__dict__[name]))
 
-def get_args_parser():
+def get_args_parser():    
     parser = argparse.ArgumentParser('DINO', add_help=False)
 
     # Model parameters
@@ -91,7 +95,7 @@ def get_args_parser():
         gradient norm if using gradient clipping. Clipping with norm .3 ~ 1.0 can
         help optimization for larger ViT architectures. 0 for disabling.""")
     parser.add_argument('--gpu', default=[0,1])
-    parser.add_argument('--batch_size_per_gpu', default=32, type=int,
+    parser.add_argument('--batch_size_per_gpu', default=18, type=int,
         help='Per-GPU batch-size : number of distinct images loaded on one GPU.')
     parser.add_argument('--epochs', default=100, type=int, help='Number of epochs of training.')
     parser.add_argument('--freeze_last_layer', default=1, type=int, help="""Number of epochs
@@ -100,7 +104,7 @@ def get_args_parser():
     parser.add_argument("--lr", default=0.0005, type=float, help="""Learning rate at the end of
         linear warmup (highest LR used during training). The learning rate is linearly scaled
         with the batch size, and specified here for a reference batch size of 256.""")
-    parser.add_argument("--warmup_epochs", default=10, type=int,
+    parser.add_argument("--warmup_epochs", default=0, type=int,
         help="Number of epochs for the linear learning-rate warm up.")
     parser.add_argument('--min_lr', type=float, default=1e-6, help="""Target LR at the
         end of optimization. We use a cosine LR schedule with linear warmup.""")
@@ -123,17 +127,14 @@ def get_args_parser():
     parser.add_argument('--data_path', default='../../CelebA_Data/trainSquareCropped', type=str,
         help='Please specify path to the ImageNet training data.')
     parser.add_argument("--txt_path", default='../../CelebA_Data/metas/intra_test/train_label.txt', type=str)
-    # parser.add_argument('--data_path', default='../../Siw-m_similar_er', type=str,
-    #     help='Please specify path to the ImageNet training data.')
-    # parser.add_argument("--txt_path", default='../../Siw-m_similar_er/siw_metas/train_list.txt', type=str)
-    parser.add_argument('--output_dir', default="output/test_finetune/", type=str, help='Path to save logs and checkpoints.')
+    parser.add_argument("--json_path", default='../../CelebA_Data/metas/intra_test/train_label.json', type=str)
+    parser.add_argument('--output_dir', default="output/ssl_meta_preTrain_DINO_gpu_2_bs_45_lr_ori/", type=str, help='Path to save logs and checkpoints.')
     parser.add_argument('--saveckp_freq', default=20, type=int, help='Save checkpoint every x epochs.')
     parser.add_argument('--seed', default=0, type=int, help='Random seed.')
-    parser.add_argument('--num_workers', default=10, type=int, help='Number of data loading workers per GPU.')
+    parser.add_argument('--num_workers', default=8, type=int, help='Number of data loading workers per GPU.')
     parser.add_argument("--dist_url", default="env://", type=str, help="""url used to set up
         distributed training; see https://pytorch.org/docs/stable/distributed.html""")
-    parser.add_argument("--local_rank", default=0, type=int, help="Please ignore and do not set this argument.")
-    
+    parser.add_argument("--local_rank", default=0, type=int, help="Please ignore and do not set this argument.")    
     return parser
 
 
@@ -151,22 +152,103 @@ def train_dino(args):
         args.local_crops_number,
     )
     #dataset = datasets.ImageFolder(args.data_path, transform=transform)
-    dataset = customData(img_path=args.data_path,
+    # 暫時先假設為有 5 個 Task，並且要在每個 Task 所學到的資訊都能應付某個單獨的 Task，測試階段不僅要測試在這些 Task 上，也要測在不同 Dataset
+    # 但這樣變相是給他們 Label 了，不算 SSL!? 靠北
+    # 先不管那麼多了，反正最後 Linear classifier 還是要給
+    dataset_live = customData(illumination_domain=0,
+                                img_path=args.data_path,
                                 txt_path=args.txt_path,
+                                json_path=args.json_path,
                                 data_transforms=transform,
                                 phase="ssl")
 
-    sampler = torch.utils.data.DistributedSampler(dataset, shuffle=True)
-    data_loader = torch.utils.data.DataLoader(
-        dataset,
-        sampler=sampler,
+    dataset_normal = customData(illumination_domain=1,
+                                img_path=args.data_path,
+                                txt_path=args.txt_path,
+                                json_path=args.json_path,
+                                data_transforms=transform,
+                                phase="ssl")
+
+    dataset_strong = customData(illumination_domain=2,
+                                img_path=args.data_path,
+                                txt_path=args.txt_path,
+                                json_path=args.json_path,
+                                data_transforms=transform,
+                                phase="ssl")        
+
+    dataset_back = customData(illumination_domain=3,
+                                img_path=args.data_path,
+                                txt_path=args.txt_path,
+                                json_path=args.json_path,
+                                data_transforms=transform,
+                                phase="ssl")                                                    
+
+    dataset_dark = customData(illumination_domain=4,
+                                img_path=args.data_path,
+                                txt_path=args.txt_path,
+                                json_path=args.json_path,
+                                data_transforms=transform,
+                                phase="ssl")
+
+    sampler_live = torch.utils.data.DistributedSampler(dataset_live, shuffle=True)
+    data_loader_live = torch.utils.data.DataLoader(
+        dataset_live,
+        sampler=sampler_live,
         batch_size=args.batch_size_per_gpu,
         num_workers=args.num_workers,
         pin_memory=True,
         drop_last=True,
     )
+
+    sampler_normal = torch.utils.data.DistributedSampler(dataset_normal, shuffle=True)
+    data_loader_normal = torch.utils.data.DataLoader(
+        dataset_normal,
+        sampler=sampler_normal,
+        batch_size=args.batch_size_per_gpu,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        drop_last=True,
+    )
+
+    sampler_strong = torch.utils.data.DistributedSampler(dataset_strong, shuffle=True)
+    data_loader_strong = torch.utils.data.DataLoader(
+        dataset_strong,
+        sampler=sampler_strong,
+        batch_size=args.batch_size_per_gpu,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        drop_last=True,
+    )
+
+    sampler_back = torch.utils.data.DistributedSampler(dataset_back, shuffle=True)
+    data_loader_back = torch.utils.data.DataLoader(
+        dataset_back,
+        sampler=sampler_back,
+        batch_size=args.batch_size_per_gpu,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        drop_last=True,
+    )
+
+    sampler_dark = torch.utils.data.DistributedSampler(dataset_dark, shuffle=True)
+    data_loader_dark = torch.utils.data.DataLoader(
+        dataset_dark,
+        sampler=sampler_dark,
+        batch_size=args.batch_size_per_gpu,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        drop_last=True,
+    )
+
+    iternum = max(len(data_loader_live),len(data_loader_normal),
+                  len(data_loader_strong),len(data_loader_back), 
+                  len(data_loader_dark))    
      
-    print(f"Data loaded: there are {len(dataset)} images.")
+    print(f"Data loaded: there are {len(dataset_live)} live images.")
+    print(f"Data loaded: there are {len(dataset_normal)} normal images.")
+    print(f"Data loaded: there are {len(dataset_strong)} strong images.")
+    print(f"Data loaded: there are {len(dataset_back)} back images.")
+    print(f"Data loaded: there are {len(dataset_dark)} dark images.")
 
     # ============ building student and teacher networks ... ============
     # we changed the name DeiT-S for ViT-S to avoid confusions
@@ -187,6 +269,9 @@ def train_dino(args):
     else:
         print(f"Unknow architecture: {args.arch}")
 
+    # load pretrain on oringinal DINO model
+    utils.load_pretrained_weights(student, args.pretrained_weights, args.checkpoint_key, args.arch, args.patch_size)
+    utils.load_pretrained_weights(teacher, args.pretrained_weights, args.checkpoint_key, args.arch, args.patch_size)
 
     # multi-crop wrapper handles forward with inputs of different resolutions
     student = utils.MultiCropWrapper(student, DINOHead(
@@ -199,10 +284,6 @@ def train_dino(args):
         teacher,
         DINOHead(embed_dim, args.out_dim, args.use_bn_in_head),
     )
-    # utils.load_pretrained_weights(student, args.pretrained_weights, args.checkpoint_key, args.arch, args.patch_size)
-    # utils.load_pretrained_weights(teacher, args.pretrained_weights, args.checkpoint_key, args.arch, args.patch_size)
-    # student.head.last_layer.weight_g.requires_grad = args.norm_last_layer
-    # teacher.head.last_layer.weight_g.requires_grad = True
     # move networks to gpu
     student, teacher = student.cuda(), teacher.cuda()
     # synchronize batch norms (if any)
@@ -213,7 +294,7 @@ def train_dino(args):
         # we need DDP wrapper to have synchro batch norms working...
         teacher = nn.parallel.DistributedDataParallel(teacher, device_ids=[args.gpu])
         teacher_without_ddp = teacher.module
-    else:
+    else: # default
         # teacher_without_ddp and teacher are the same thing
         teacher_without_ddp = teacher
     student = nn.parallel.DistributedDataParallel(student, device_ids=[args.gpu])
@@ -251,17 +332,17 @@ def train_dino(args):
     lr_schedule = utils.cosine_scheduler(
         args.lr * (args.batch_size_per_gpu * utils.get_world_size()) / 256.,  # linear scaling rule
         args.min_lr,
-        args.epochs, len(data_loader),
+        args.epochs, iternum,
         warmup_epochs=args.warmup_epochs,
     )
     wd_schedule = utils.cosine_scheduler(
         args.weight_decay,
         args.weight_decay_end,
-        args.epochs, len(data_loader),
+        args.epochs, iternum,
     )
     # momentum parameter is increased to 1. during training with a cosine schedule
     momentum_schedule = utils.cosine_scheduler(args.momentum_teacher, 1,
-                                               args.epochs, len(data_loader))
+                                               args.epochs, iternum)
     print(f"Loss, optimizer and schedulers ready.")
 
     # ============ optionally resume training ... ============
@@ -276,15 +357,20 @@ def train_dino(args):
         dino_loss=dino_loss,
     )
     start_epoch = to_restore["epoch"]
-
+    writer = SummaryWriter()
     start_time = time.time()
     print("Starting DINO training !")
     for epoch in range(start_epoch, args.epochs):
-        data_loader.sampler.set_epoch(epoch)
+        data_loader_live.sampler.set_epoch(epoch)
+        data_loader_normal.sampler.set_epoch(epoch)
+        data_loader_strong.sampler.set_epoch(epoch)
+        data_loader_back.sampler.set_epoch(epoch)
+        data_loader_dark.sampler.set_epoch(epoch)
 
         # ============ training one epoch of DINO ... ============
-        train_stats = train_one_epoch(student, teacher, teacher_without_ddp, dino_loss,
-            data_loader, optimizer, lr_schedule, wd_schedule, momentum_schedule,
+        train_stats = train_one_epoch(student, teacher, teacher_without_ddp, embed_dim, dino_loss,
+            iternum, data_loader_live, data_loader_normal, data_loader_strong, data_loader_back, data_loader_dark,
+            optimizer, lr_schedule, wd_schedule, momentum_schedule,
             epoch, fp16_scaler, args)
 
         # ============ writing logs ... ============
@@ -303,6 +389,8 @@ def train_dino(args):
             utils.save_on_master(save_dict, os.path.join(args.output_dir, f'checkpoint{epoch:04}.pth'))
         log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                      'epoch': epoch}
+        for k,v in train_stats.items():
+            writer.add_scalar(str(k), v, epoch)
         if utils.is_main_process():
             with (Path(args.output_dir) / "log.txt").open("a") as f:
                 f.write(json.dumps(log_stats) + "\n")
@@ -311,50 +399,211 @@ def train_dino(args):
     print('Training time {}'.format(total_time_str))
 
 
-def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loader,
+def train_one_epoch(student, teacher, teacher_without_ddp, embed_dim, dino_loss, 
+                    iternum, data_loader_live, data_loader_normal, data_loader_strong, data_loader_back, data_loader_dark,
                     optimizer, lr_schedule, wd_schedule, momentum_schedule,epoch,
                     fp16_scaler, args):
+      
+    data_live = get_inf_iterator(data_loader_live)
+    data_normal = get_inf_iterator(data_loader_normal)
+    data_strong = get_inf_iterator(data_loader_strong)
+    data_back = get_inf_iterator(data_loader_back)
+    data_dark = get_inf_iterator(data_loader_dark)
+
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Epoch: [{}/{}]'.format(epoch, args.epochs)
-    for it, (images, _) in enumerate(metric_logger.log_every(data_loader, 10, header)):
-        # update weight decay and learning rate according to their schedule
-        it = len(data_loader) * epoch + it  # global training iteration
+    adapt_opt_state = optimizer.state_dict()# 不能這樣，會變成 update student
+    for step in range(iternum):
+        iterLoss = 0
+        optimizer.zero_grad()
+        # zero-grad the parameters
+        for p in student.parameters():
+            p.grad = torch.zeros_like(p.data)
+
+        metric_logger.log_every_meta(step, iternum, 10, header)
+
+        # ============ preparing meta-train、meta-test data ... ============
+        live_images, _ = next(data_live)
+        normal_images, _ = next(data_normal)
+        strong_images, _ = next(data_strong)
+        back_images, _ = next(data_back)
+        dark_images, _ = next(data_dark)
+
+        it = iternum * epoch + step
         for i, param_group in enumerate(optimizer.param_groups):
             param_group["lr"] = lr_schedule[it]
             if i == 0:  # only the first group is regularized
                 param_group["weight_decay"] = wd_schedule[it]
 
+        catimglist = [live_images, normal_images, strong_images, back_images, dark_images]
+        domain_list = list(range(len(catimglist)))
+        random.shuffle(domain_list)
+        meta_train_list = domain_list[:len(catimglist)-1] 
+        meta_test_list = domain_list[len(catimglist)-1:]
+
+        # 先將 meta-test image 先放起來就不用重新讀
+        meta_test_index = meta_test_list[0]
+        meta_test_images = catimglist[meta_test_index]
         # move images to gpu
-        images = [im.cuda(non_blocking=True) for im in images]
-        # teacher and student forward passes + compute dino loss
-        with torch.cuda.amp.autocast(fp16_scaler is not None):
-            teacher_output = teacher(images[:2])  # only the 2 global views pass through the teacher
-            student_output = student(images)
-            loss = dino_loss(student_output, teacher_output, epoch)
+        meta_test_images = [im.cuda(non_blocking=True) for im in meta_test_images]
+        
+        for index in meta_train_list: # iterate all tasks, each task include meta-train and meta-test
+            
+            # ============ building student learner networks ... ============
+            '''
+            student_vit_learner = copy.deepcopy(student.module.backbone)# 這邊不知道會不會 copy 到上一輪更新的 student_grad，但我看新的 adapt_opt.param_groups 沒有
+            student_learner = utils.MultiCropWrapper(
+                student_vit_learner, 
+                DINOHead(
+                embed_dim,
+                args.out_dim,
+                use_bn=args.use_bn_in_head,
+                norm_last_layer=args.norm_last_layer,
+            ))
+            student_learner = student_learner.cuda()
+            nn.parallel.DistributedDataParallel(student_learner, device_ids=[args.gpu])
+            student_learner.head.mlp = copy.deepcopy(student.module.head.mlp)
+            # w = g * v / |v|，正規化， g 為 1 
+            student_learner.head.last_layer.weight.copy_(student.module.head.last_layer.weight) #non-leaf, no grad
+            student_learner.head.last_layer.weight_g.copy_(student.module.head.last_layer.weight_g) #leaf, no grad
+            student_learner.head.last_layer.weight_v = copy.deepcopy(student.module.head.last_layer.weight_v) #leaf, has grad            
+            '''
+            student_learner = student
 
-        if not math.isfinite(loss.item()):
-            print("Loss is {}, stopping training".format(loss.item()), force=True)
-            sys.exit(1)
+            # ============ building teacher learner networks ... ============
+            '''
+            teacher_vit_learner = copy.deepcopy(teacher.backbone)
+            teacher_learner = utils.MultiCropWrapper(
+                teacher_vit_learner,
+                DINOHead(embed_dim, args.out_dim, args.use_bn_in_head),
+            )
+            teacher_learner = teacher_learner.cuda()
+            teacher_learner.head.mlp = copy.deepcopy(teacher.head.mlp)
+            teacher_learner.head.last_layer.weight.copy_(teacher.head.last_layer.weight) #non-leaf, no grad
+            teacher_learner.head.last_layer.weight_g.copy_(teacher.head.last_layer.weight_g) #leaf, no grad
+            teacher_learner.head.last_layer.weight_v = copy.deepcopy(teacher.head.last_layer.weight_v) #leaf, has grad
+            '''
+            teacher_learner = teacher
+            # print(student.module.backbone)
+            # print(student.module.head.mlp[4])
+            # print(student.module.head.mlp[4].weight.grad_fn)# None, 但不知道為什麼
+            # print(student.module.head.last_layer.weight_g.grad_fn)# None, 因為是自己創的變數全都設為 1，不會有 gradient_func            
+            
+            # ============ preparing optimizer ... ============
+            params_groups = utils.get_params_groups(student_learner)
+            if args.optimizer == "adamw":
+                adapt_opt = torch.optim.AdamW(params_groups)  # to use with ViTs
+            elif args.optimizer == "sgd":
+                adapt_opt = torch.optim.SGD(params_groups, lr=0, momentum=0.9)  # lr is set by scheduler
+            elif args.optimizer == "lars":
+                adapt_opt = utils.LARS(params_groups)  # to use with convnet and large batches
+            
+            # adapt_opt.load_state_dict(adapt_opt_state) # 不能直接 load，就算要 load 也要想辦法將 param_group 設為 learner 的
+            # adapt_opt.param_groups = utils.get_params_groups(student_learner)# error, amsgrad 會不見
+            # 因為這邊有設定 lr、w_decay，上面兩行應該不用
+            for i, param_group in enumerate(adapt_opt.param_groups):
+                param_group["lr"] = lr_schedule[it]
+                if i == 0:  # only the first group is regularized
+                    param_group["weight_decay"] = wd_schedule[it]
 
-        # student update
-        optimizer.zero_grad()
-        param_norms = None
-        if fp16_scaler is None:
-            loss.backward()
-            if args.clip_grad: #to prevent diverged training
-                param_norms = utils.clip_gradients(student, args.clip_grad)
-            utils.cancel_gradients_last_layer(epoch, student,
-                                              args.freeze_last_layer)
-            optimizer.step()
-        else:
-            fp16_scaler.scale(loss).backward()
-            if args.clip_grad:
-                fp16_scaler.unscale_(optimizer)  # unscale the gradients of optimizer's assigned params in-place
-                param_norms = utils.clip_gradients(student, args.clip_grad)
-            utils.cancel_gradients_last_layer(epoch, student,
-                                              args.freeze_last_layer)
-            fp16_scaler.step(optimizer)
-            fp16_scaler.update()
+            # catimg_meta = catimglist[index]
+            # batchidx = list(range(len(catimg_meta)))
+            # random.shuffle(batchidx)
+            # images = catimg_meta[batchidx,:]
+            # move images to gpu
+            """
+            Meta-train
+            """
+            images = catimglist[index]
+            images = [im.cuda(non_blocking=True) for im in images]
+            # teacher and student forward passes + compute dino loss
+            with torch.cuda.amp.autocast(fp16_scaler is not None):
+                teacher_output = teacher_learner(images[:2])  # only the 2 global views pass through the teacher
+                student_output = student_learner(images)
+                adapt_opt.zero_grad()
+                loss = dino_loss(student_output, teacher_output, epoch)
+                iterLoss += loss
+
+            param_norms = None
+            if fp16_scaler is None:
+                loss.backward()
+                if args.clip_grad: #to prevent diverged training
+                    param_norms = utils.clip_gradients(student_learner, args.clip_grad)
+                utils.cancel_gradients_last_layer(epoch, student_learner,
+                                                args.freeze_last_layer)
+                adapt_opt.step()
+            else:
+                fp16_scaler.scale(loss).backward()
+                if args.clip_grad:
+                    fp16_scaler.unscale_(adapt_opt)  # unscale the gradients of optimizer's assigned params in-place
+                    param_norms = utils.clip_gradients(student_learner, args.clip_grad)
+                utils.cancel_gradients_last_layer(epoch, student_learner,
+                                                args.freeze_last_layer) # 不太懂為何前面的 last_layer weight_v 有 gradient
+                fp16_scaler.step(adapt_opt)
+                fp16_scaler.update()
+            # loss.backward()
+            # adapt_opt.step()
+            with torch.no_grad(): # EMA 更新 teacher_learner
+                m = momentum_schedule[it]  # momentum parameter
+                for param_q, param_k in zip(student_learner.parameters(), teacher_learner.parameters()):
+                    param_k.data.mul_(m).add_((1 - m) * param_q.detach().data)
+
+            if not math.isfinite(loss.item()):
+                print("Loss is {}, stopping training".format(loss.item()), force=True)
+                sys.exit(1)
+            # for p, l in zip(student.parameters(), student_learner.parameters()): # 這邊應該不需要紀錄，因為 meta-test 會連同這邊的一起處理
+            #     p.grad.data.add_(-1.0, l.data)
+            """
+            Meta-test
+            """            
+            # catimg_meta = catimglist[meta_test_index]
+            # batchidx = list(range(len(catimg_meta)))
+            # random.shuffle(batchidx)
+            # images = catimg_meta[batchidx,:]
+            
+            with torch.cuda.amp.autocast(fp16_scaler is not None):
+                teacher_output = teacher_learner(meta_test_images[:2])  # only the 2 global views pass through the teacher
+                student_output = student_learner(meta_test_images)
+                adapt_opt.zero_grad()
+                loss = dino_loss(student_output, teacher_output, epoch)
+                iterLoss += loss
+
+            param_norms = None
+            if fp16_scaler is None:
+                loss.backward()
+                if args.clip_grad: #to prevent diverged training
+                    param_norms = utils.clip_gradients(student_learner, args.clip_grad)
+                utils.cancel_gradients_last_layer(epoch, student_learner,
+                                                args.freeze_last_layer)
+                adapt_opt.step()
+            else:
+                fp16_scaler.scale(loss).backward()
+                if args.clip_grad:
+                    fp16_scaler.unscale_(adapt_opt)  # unscale the gradients of optimizer's assigned params in-place
+                    param_norms = utils.clip_gradients(student_learner, args.clip_grad)
+                utils.cancel_gradients_last_layer(epoch, student_learner,
+                                                args.freeze_last_layer)
+                fp16_scaler.step(adapt_opt)
+                fp16_scaler.update()
+            # loss.backward()
+            # adapt_opt.step() # 更新 student_learner，因為最終的 student 會靠 student_learner 更新
+            # 這邊不需要更新 teacher_learner 了，因為已經結束 meta-test
+
+            if not math.isfinite(loss.item()):
+                print("Loss is {}, stopping training".format(loss.item()), force=True)
+                sys.exit(1)
+            for p, l in zip(student.parameters(), student_learner.parameters()): # 不確定需不需要 get_params_groups
+                p.grad.data.add_(-1.0, l.data)# student.grad = (-1)*student_LR_W，總共會累積 4 次
+
+        # ============ finish meta-train and meta-test. student, teacher update ... ============
+        # optimizer.zero_grad() # 這邊不能 zero_grad 否則 student.grad 會被清掉!?
+        updateTimes = len(catimglist)-1
+        for p in student.parameters():
+            # tmpA = p.grad.data
+            # tmpB = p.grad.data.mul_(1.0 / float(updateTimes))# 小數點後第 5 位會不見 (ex:BC相減後的-0.000025)
+            # tmpC = p.data
+            p.grad.data.mul_(1.0 / updateTimes).add_(p.data) # student_W = [4*(-1)*student_LR_W]/4 + student_W
+        optimizer.step()
 
         # EMA update for the teacher
         with torch.no_grad():
@@ -364,14 +613,13 @@ def train_one_epoch(student, teacher, teacher_without_ddp, dino_loss, data_loade
 
         # logging
         torch.cuda.synchronize()
-        metric_logger.update(loss=loss.item())
+        metric_logger.update(loss=iterLoss.item())# loss 被取代為 iterLoss，這樣才看的到每個 iteration total loss
         metric_logger.update(lr=optimizer.param_groups[0]["lr"])
         metric_logger.update(wd=optimizer.param_groups[0]["weight_decay"])
     # gather the stats from all processes
     metric_logger.synchronize_between_processes()
     print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
-
 
 class DINOLoss(nn.Module):
     def __init__(self, out_dim, ncrops, warmup_teacher_temp, teacher_temp,
