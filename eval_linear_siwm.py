@@ -23,15 +23,15 @@ import torch.distributed as dist
 import torch.backends.cudnn as cudnn
 from torchvision import datasets
 from torchvision import transforms as pth_transforms
-from dataset.customData import customData
+from dataset.customDataSiwM import customData
 
-import utils
+import utils_siwm
 import vision_transformer as vits
 
 
 def eval_linear(args):
-    utils.init_distributed_mode(args)
-    print("git:\n  {}\n".format(utils.get_sha()))
+    utils_siwm.init_distributed_mode(args)
+    print("git:\n  {}\n".format(utils_siwm.get_sha()))
     print("\n".join("%s: %s" % (k, str(v)) for k, v in sorted(dict(vars(args)).items())))
     cudnn.benchmark = True
 
@@ -54,10 +54,10 @@ def eval_linear(args):
                                 txt_path=args.txt_path,
                                 data_transforms=train_transform,
                                 phase="train")
-    dataset_val = customData(img_path=args.test_data_path,
+    dataset_val = customData(img_path=args.data_path,
                                 txt_path=args.test_txt_path,
                                 data_transforms=val_transform,
-                                phase="test")                                
+                                phase="test")
     sampler = torch.utils.data.distributed.DistributedSampler(dataset_train)
     train_loader = torch.utils.data.DataLoader(
         dataset_train,
@@ -80,7 +80,7 @@ def eval_linear(args):
     model.eval()
     print(f"Model {args.arch} {args.patch_size}x{args.patch_size} built.")
     # load weights to evaluate
-    utils.load_pretrained_weights(model, args.pretrained_weights, args.checkpoint_key, args.arch, args.patch_size)
+    utils_siwm.load_pretrained_weights(model, args.pretrained_weights, args.checkpoint_key, args.arch, args.patch_size)
 
     linear_classifier = LinearClassifier(model.embed_dim * (args.n_last_blocks + int(args.avgpool_patchtokens)), num_labels=args.num_labels)
     linear_classifier = linear_classifier.cuda()
@@ -89,7 +89,7 @@ def eval_linear(args):
     # set optimizer
     optimizer = torch.optim.SGD(
         linear_classifier.parameters(),
-        args.lr * (args.batch_size_per_gpu * utils.get_world_size()) / 256., # linear scaling rule
+        args.lr * (args.batch_size_per_gpu * utils_siwm.get_world_size()) / 256., # linear scaling rule
         momentum=0.9,
         weight_decay=0, # we do not apply weight decay
     )
@@ -97,7 +97,7 @@ def eval_linear(args):
 
     # Optionally resume from a checkpoint
     to_restore = {"epoch": 0, "best_acc": 0.}
-    utils.restart_from_checkpoint(
+    utils_siwm.restart_from_checkpoint(
         os.path.join(args.output_dir, "checkpoint.pth.tar"),
         # os.path.join(args.output_dir, "checkpoint_from5.pth.tars"),        
         run_variables=to_restore,
@@ -123,7 +123,7 @@ def eval_linear(args):
             print(f'Max accuracy so far: {best_acc:.2f}%')
             log_stats = {**{k: v for k, v in log_stats.items()},
                          **{f'test_{k}': v for k, v in test_stats.items()}}
-        if utils.is_main_process():
+        if utils_siwm.is_main_process():
             with (Path(args.output_dir) / "log.txt").open("a") as f:
                 f.write(json.dumps(log_stats) + "\n")
             save_dict = {
@@ -141,8 +141,8 @@ def eval_linear(args):
 
 def train(model, linear_classifier, optimizer, loader, epoch, n, avgpool):
     linear_classifier.train()
-    metric_logger = utils.MetricLogger(delimiter="  ")
-    metric_logger.add_meter('lr', utils.SmoothedValue(window_size=1, fmt='{value:.6f}'))
+    metric_logger = utils_siwm.MetricLogger(delimiter="  ")
+    metric_logger.add_meter('lr', utils_siwm.SmoothedValue(window_size=1, fmt='{value:.6f}'))
     header = 'Epoch: [{}]'.format(epoch)
     for (inp, target) in metric_logger.log_every(loader, 20, header):
         # move to gpu
@@ -186,7 +186,7 @@ def validate_network(val_loader, model, linear_classifier, n, avgpool, output_di
     # targets = []
 
     linear_classifier.eval()
-    metric_logger = utils.MetricLogger(delimiter="  ")
+    metric_logger = utils_siwm.MetricLogger(delimiter="  ")
     header = 'Test:'
     for inp, target in metric_logger.log_every(val_loader, 20, header):
         # move to gpu
@@ -204,9 +204,9 @@ def validate_network(val_loader, model, linear_classifier, n, avgpool, output_di
         loss = nn.CrossEntropyLoss()(output, target)
 
         if linear_classifier.module.num_labels >= 5:
-            acc1, acc5 = utils.accuracy(output, target, topk=(1, 5))
+            acc1, acc5 = utils_siwm.accuracy(output, target, topk=(1, 5))
         else:
-            acc1, = utils.accuracy(output, target, topk=(1,))
+            acc1, = utils_siwm.accuracy(output, target, topk=(1,))
         outputs=torch.cat((outputs,output),0)
         targets=torch.cat((targets,target),0)
         # outputs.append(output)
@@ -223,7 +223,7 @@ def validate_network(val_loader, model, linear_classifier, n, avgpool, output_di
     else:
         print('* Acc@1 {top1.global_avg:.3f} loss {losses.global_avg:.3f}'
           .format(top1=metric_logger.acc1, losses=metric_logger.loss))
-    utils.model_eval(outputs, targets, output_dir, epoch)
+    utils_siwm.model_eval(outputs, targets, output_dir, epoch)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
@@ -248,13 +248,13 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser('Evaluation with linear classification on ImageNet')
     parser.add_argument('--n_last_blocks', default=4, type=int, help="""Concatenate [CLS] tokens
         for the `n` last blocks. We use `n=4` when evaluating ViT-Small and `n=1` with ViT-Base.""")
-    parser.add_argument('--avgpool_patchtokens', default=False, type=utils.bool_flag,
+    parser.add_argument('--avgpool_patchtokens', default=False, type=utils_siwm.bool_flag,
         help="""Whether ot not to concatenate the global average pooled features to the [CLS] token.
         We typically set this to False for ViT-Small and to True with ViT-Base.""")
     parser.add_argument('--arch', default='vit_small', type=str,
         choices=['vit_tiny', 'vit_small', 'vit_base'], help='Architecture (support only ViT atm).')
     parser.add_argument('--patch_size', default=16, type=int, help='Patch resolution of the model.')
-    parser.add_argument('--pretrained_weights', default='./output/ssl_celebA/checkpoint.pth', type=str, help="Path to pretrained weights to evaluate.")
+    parser.add_argument('--pretrained_weights', default='./output/ssl_siwM/checkpoint.pth', type=str, help="Path to pretrained weights to evaluate.")
     parser.add_argument("--checkpoint_key", default="teacher", type=str, help='Key to use in the checkpoint (example: "teacher")')
     parser.add_argument('--epochs', default=100, type=int, help='Number of epochs of training.')
     parser.add_argument("--lr", default=0.001, type=float, help="""Learning rate at the beginning of
@@ -265,13 +265,12 @@ if __name__ == '__main__':
     parser.add_argument("--dist_url", default="env://", type=str, help="""url used to set up
         distributed training; see https://pytorch.org/docs/stable/distributed.html""")
     parser.add_argument("--local_rank", default=0, type=int, help="Please ignore and do not set this argument.")
-    parser.add_argument('--data_path', default='../../CelebA_Data/trainSquareCropped', type=str)
-    parser.add_argument('--test_data_path', default='../../CelebA_Data/testSquareCropped', type=str)
-    parser.add_argument("--txt_path", default='../../CelebA_Data/metas/intra_test/train_label.txt', type=str)
-    parser.add_argument("--test_txt_path", default='../../CelebA_Data/metas/intra_test/test_label.txt', type=str)
+    parser.add_argument('--data_path', default='../../Siw-m_similar_er', type=str)
+    parser.add_argument("--txt_path", default='../../Siw-m_similar_er/siw_metas/train_list.txt', type=str)
+    parser.add_argument("--test_txt_path", default='../../Siw-m_similar_er/siw_metas/test_list.txt', type=str)
     parser.add_argument('--num_workers', default=10, type=int, help='Number of data loading workers per GPU.')
     parser.add_argument('--val_freq', default=1, type=int, help="Epoch frequency for validation.")
-    parser.add_argument('--output_dir', default="./output/ssl_celebA/linear", help='Path to save logs and checkpoints')
-    parser.add_argument('--num_labels', default=2, type=int, help='Number of labels for linear classifier')
+    parser.add_argument('--output_dir', default="./output/ssl_siwM/linear", help='Path to save logs and checkpoints')
+    parser.add_argument('--num_labels', default=14, type=int, help='Number of labels for linear classifier')
     args = parser.parse_args()
     eval_linear(args)

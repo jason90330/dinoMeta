@@ -1,0 +1,79 @@
+============================================================
+Model 000 
+
+Spoof type: 001 
+TP:4703, TN:81545,  FP:657,  FN:160
+accuracy:0.990616
+recall:0.967098
+apcer:0.007993
+bpcer:0.032902
+acer:0.020447
+eer:0.019087
+hter:0.017136
+TPR@FPR=5E-3:0.962575
+
+Spoof type: 002 
+TP:6184, TN:79755,  FP:128,  FN:998
+accuracy:0.987067
+recall:0.861041
+apcer:0.001602
+bpcer:0.138959
+acer:0.070280
+eer:0.038040
+hter:0.033399
+TPR@FPR=5E-3:0.885269
+
+Spoof type: 003 
+TP:5691, TN:81189,  FP:66,  FN:119
+accuracy:0.997875
+recall:0.979518
+apcer:0.000812
+bpcer:0.020482
+acer:0.010647
+eer:0.004367
+hter:0.003618
+TPR@FPR=5E-3:0.996730
+
+Spoof type: 004 
+TP:1572, TN:85285,  FP:53,  FN:155
+accuracy:0.997611
+recall:0.910249
+apcer:0.000621
+bpcer:0.089751
+acer:0.045186
+eer:0.001112
+hter:0.000533
+TPR@FPR=5E-3:1.000000
+
+Spoof type: 005 
+TP:5337, TN:81714,  FP:2,  FN:12
+accuracy:0.999839
+recall:0.997757
+apcer:0.000024
+bpcer:0.002243
+acer:0.001134
+eer:0.000000
+hter:0.000000
+TPR@FPR=5E-3:1.000000
+
+Spoof type: 006 
+TP:1356, TN:85673,  FP:36,  FN:0
+accuracy:0.999587
+recall:1.000000
+apcer:0.000420
+bpcer:0.000000
+acer:0.000210
+eer:0.000000
+hter:0.000000
+TPR@FPR=5E-3:0.000737
+
+Spoof type: 007 
+TP:2846, TN:84060,  FP:143,  FN:16
+accuracy:0.998174
+recall:0.994410
+apcer:0.001698
+bpcer:0.005590
+acer:0.003644
+eer:0.002722
+hter:0.001603
+TPR@FPR=5E-3:1.000000

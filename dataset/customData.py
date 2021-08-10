@@ -43,7 +43,7 @@ class customData(Dataset):
             self.img_label = []
             lengthOfTrain = int(len(lines)*0.8)
             if phase=='train':
-                for line in lines[:lengthOfTrain]:
+                for line in lines:
                     path = os.path.join(img_path, (line.strip().split(' ')[0][11:]))
                     label = int(line.strip().split(' ')[-1])
                     if os.path.isfile(path):
@@ -51,6 +51,17 @@ class customData(Dataset):
                         self.img_label.append(label)
                     else:
                         print(path)
+            elif phase=='test':
+                for line in lines:
+                    path = os.path.join(img_path, (line.strip().split(' ')[0][10:]))
+                    if os.path.isfile(path):
+                        if "live" in path:# and getreal:
+                            label = 0
+                        else:#if not getreal:
+                            label = 1
+                        self.img_name.append(path)
+                        self.img_label.append(label)
+
             elif phase=='val':
                 for line in lines[lengthOfTrain:]:
                     path = os.path.join(img_path, (line.strip().split(' ')[0][11:]))

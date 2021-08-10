@@ -42,25 +42,94 @@ class customData(Dataset):
             # self.img_name = [os.path.join(img_path, (line.strip().split(' ')[0][11:])) for line in lines]
             self.img_name = []
             self.img_label = []
-            lengthOfTrain = int(len(foldLists)*0.8)
+            lengthOfTrain = int(len(img_paths)*0.8)
+            spoof_types =   { 
+                        'Replay': 1,
+                        'Paper': 2,
+                        'HalfMask': 3,
+                        'SiliconeMask': 4,
+                        'TransparentMask': 5,
+                        'PaperMask': 6,
+                        'MannequinHead': 7,
+                        'Obfuscation': 8,
+                        'Impersonation': 9,
+                        'Cosmetic': 10,
+                        'FunnyeyeGlasses': 11,
+                        'PaperGlasses': 12,
+                        'PaperCut': 13,
+                        }
             if phase=='train':
-                for line in foldLists[:lengthOfTrain]:
-                    path = os.path.join(img_path, (line.strip().split(' ')[0][11:]))
-                    label = int(line.strip().split(' ')[-1])
-                    if os.path.isfile(path):
-                        self.img_name.append(path)
-                        self.img_label.append(label)
-                    else:
-                        print(path)
+                for path in img_paths:#不能先吃
+                    for line in foldLists:
+                        trainFolder = line.strip("\n")
+                        if "Live" in path and "Train" in path:
+                            self.img_name.append(path)
+                            self.img_label.append(0)
+                            break
+                        elif trainFolder in path:
+                            name = path.split('/')[-3]#只保留類別名稱
+                            self.img_name.append(path)
+                            label = spoof_types[name]
+                            self.img_label.append(label)
+                            break
+                        else:
+                            # print(path)
+                            continue                        
             elif phase=='val':
-                for line in foldLists[lengthOfTrain:]:
-                    path = os.path.join(img_path, (line.strip().split(' ')[0][11:]))
-                    label = int(line.strip().split(' ')[-1])
-                    if os.path.isfile(path):
-                        self.img_name.append(path)
-                        self.img_label.append(label)
-                    else:
+                for path in img_paths[lengthOfTrain:]:
+                    for line in foldLists:
+                        validFolder = line.strip("\n")
+                        if "Live" in path and "Train" in path:
+                            self.img_name.append(path)
+                            self.img_label.append(0)
+                            break
+                        elif validFolder in path:
+                            name = path.split('/')[-3]#只保留類別名稱
+                            self.img_name.append(path)
+                            label = spoof_types[name]
+                            self.img_label.append(label)
+                            break
+                        else:
+                            # print(path)
+                            continue
+            elif phase=="test":
+                for path in img_paths:
+                    try:
+                        for idx, line in enumerate(foldLists):
+                            trainFolder = line.strip("\n")
+                            if "Live" in path and "Train" not in path:
+                                self.img_name.append(path)
+                                self.img_label.append(0)
+                                break                            
+                            elif trainFolder in path or "Train" in path:
+                                break # 任何一個 train folder 有出現在 path 當中，代表不是 test data
+                            elif idx == len(foldLists)-1: # 所有 train folder 都沒出現在 path 當中，代表是 test data
+                                name = path.split('/')[-3]#只保留類別名稱
+                                self.img_name.append(path)
+                                label = spoof_types[name]
+                                self.img_label.append(label)
+                                break
+                            else:
+                                continue
+                    except:
                         print(path)
+            elif phase=="test_lack_8":
+                for path in img_paths:
+                    for line in foldLists:
+                        testFolder = line.strip("\n")
+                        if "Live" in path and "Test" in path:
+                            self.img_name.append(path)
+                            self.img_label.append(0)
+                            break
+                        elif testFolder in path:
+                            name = path.split('/')[-3]#只保留類別名稱
+                            self.img_name.append(path)
+                            label = spoof_types[name]
+                            self.img_label.append(label)
+                            break
+                        else:
+                            # print(path)
+                            continue
             elif phase=="ssl":
                 for path in img_paths:#不能先吃
                     for line in foldLists:
