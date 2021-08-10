@@ -104,7 +104,7 @@ if __name__ == '__main__':
         help="Path to pretrained weights to load.")
     parser.add_argument("--checkpoint_key", default="teacher", type=str,
         help='Key to use in the checkpoint (example: "teacher")')
-    # parser.add_argument("--image_path", default='../../CelebA_Data/testSquareCropped/3613/spoof/511091.png', type=str, help="Path of the image to load.")
+    parser.add_argument("--image_path", default='../../CelebA_Data/testSquareCropped/3613/spoof/511091.png', type=str, help="Path of the image to load.")
     # parser.add_argument("--image_path", default='../../CelebA_Data/testSquareCropped/4930/spoof/497676.png', type=str, help="Path of the image to load.")
     # parser.add_argument("--image_path", default='../../CelebA_Data/testSquareCropped/4966/spoof/498608.png', type=str, help="Path of the image to load.")
     # parser.add_argument("--image_path", default='../../CelebA_Data/testSquareCropped/5013/spoof/499988.png', type=str, help="Path of the image to load.")
